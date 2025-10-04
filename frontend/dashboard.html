@@ -1,0 +1,202 @@
+﻿<!doctype html>
+<html lang="tr">
+<head>
+  <meta charset="utf-8" />
+  <title>Bakım Dashboard — Sprint 7</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    :root{--bg:#fff;--fg:#111;--muted:#666;--card:#fafafa;--ok:#0a7c2f;--err:#b00020}
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial;margin:20px;color:var(--fg);background:var(--bg)}
+    .row{display:grid;grid-template-columns:1fr;gap:20px}
+    @media (min-width:1000px){.row{grid-template-columns:1fr 1fr}}
+    .card{padding:16px;border:1px solid #eee;border-radius:12px;box-shadow:0 2px 10px rgba(0,0,0,.05);background:var(--card)}
+    .toolbar{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;align-items:end;margin-bottom:8px}
+    .toolbar2{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:8px;align-items:end;margin-bottom:12px}
+    label{font-size:12px;color:var(--muted);display:flex;flex-direction:column;gap:6px}
+    input,button{padding:8px 10px;border-radius:8px;border:1px solid #ccc;font-size:14px}
+    button{cursor:pointer}
+    #status{justify-self:start;font-size:14px}
+    .ok{color:var(--ok)} .err{color:var(--err)}
+  </style>
+</head>
+<body>
+  <h1>Bakım Dashboard</h1>
+
+  <div class="toolbar">
+    <label>Başlangıç <input type="date" id="start" value="2025-08-01"></label>
+    <label>Bitiş <input type="date" id="end" value="2025-09-01"></label>
+    <label>Top <input type="number" id="top" value="10" min="1" max="100" style="width:100%"></label>
+    <label>API <input type="text" id="base" value="http://127.0.0.1:8011"></label>
+    <div>
+      <button id="refresh">Yenile</button>
+      <button id="health">Sağlık</button>
+    </div>
+    <div id="status"></div>
+  </div>
+
+  <div class="toolbar2">
+    <label>Kullanıcı <input type="text" id="u" placeholder="store1"></label>
+    <label>Parola <input type="password" id="p" placeholder="Passw0rd!"></label>
+    <div>
+      <button id="login">Giriş Yap</button>
+      <button id="logout">Çıkış</button>
+    </div>
+    <label>JWT (opsiyonel) <input type="password" id="token" placeholder="Bearer token"></label>
+    <div></div><div></div>
+  </div>
+
+  <div class="row">
+    <div class="card">
+      <h3>Pareto — Arıza (Makine)</h3>
+      <canvas id="chartFailures" height="160"></canvas>
+    </div>
+    <div class="card">
+      <h3>Açık İş Emirleri — Yaş Dağılımı</h3>
+      <canvas id="chartAging" height="160"></canvas>
+    </div>
+  </div>
+
+  <div class="row" style="margin-top:20px">
+    <div class="card">
+      <h3>En Çok Tüketilen Parçalar</h3>
+      <canvas id="chartParts" height="160"></canvas>
+    </div>
+  </div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const statusEl = $("status");
+
+function setStatus(msg, cls=""){ statusEl.className = cls; statusEl.textContent = msg; }
+function endExclusive(iso){ const d=new Date(iso); d.setDate(d.getDate()+1); return d.toISOString().slice(0,10); }
+function save(k,v){ try{ localStorage.setItem(k,v) }catch{} }
+function load(k,def=""){ try{ return localStorage.getItem(k) ?? def }catch{ return def } }
+
+(function init(){
+  $("base").value  = load("dash_base","http://127.0.0.1:8011");
+  $("token").value = load("dash_token","");
+  $("start").value = load("dash_start","2025-08-01");
+  $("end").value   = load("dash_end","2025-09-01");
+  $("top").value   = load("dash_top","10");
+})();
+
+["base","token","start","end","top"].forEach(id=>{
+  $(id).addEventListener("change", ()=> save("dash_"+id, $(id).value));
+});
+
+async function getJSON(url, token){
+  const headers = {}; if (token) headers["Authorization"] = "Bearer " + token;
+  const r = await fetch(url, { headers });
+  if (!r.ok) { let body=""; try{ body=await r.text() }catch{}; throw new Error(`${r.status} ${r.statusText} — ${body.slice(0,160)}`); }
+  return r.json();
+}
+
+// *** BURASI: wrap/liste uyumluluğu ***
+function ensureArray(x){
+  if (Array.isArray(x)) return x;
+  if (x && Array.isArray(x.value)) return x.value;
+  return x ?? [];
+}
+
+function upsertChart(ctx, type, data, options){
+  if (ctx._chart) ctx._chart.destroy();
+  ctx._chart = new Chart(ctx, { type, data, options });
+}
+
+async function loadAll(){
+  const start = $("start").value;
+  const endInc = endExclusive($("end").value);
+  const top  = $("top").value;
+  const Base = $("base").value.trim().replace(/\/+$/,"");
+  const token = $("token").value.trim();
+
+  setStatus("Yükleniyor…");
+  $("refresh").disabled = true;
+
+  try{
+    const [fRaw, pRaw, agingObj] = await Promise.all([
+      getJSON(`${Base}/reports/top-failure-machines-list?start=${start}&end=${endInc}&top=${top}`, token),
+      getJSON(`${Base}/reports/top-consumed-parts-list?start=${start}&end=${endInc}&top=${top}`, token),
+      getJSON(`${Base}/reports/open-workorders-aging`, token),
+    ]);
+
+    const failArr = ensureArray(fRaw);
+    const partArr = ensureArray(pRaw);
+
+    // 1) Pareto
+    const fLabels = failArr.map(x => x.machineName);
+    const fData   = failArr.map(x => x.failureCount);
+    const cum=[]; let sum=0, total=fData.reduce((a,b)=>a+b,0)||1;
+    for(const v of fData){ sum+=v; cum.push(Math.round(sum/total*100)); }
+    upsertChart($("chartFailures").getContext("2d"), "bar", {
+      labels: fLabels,
+      datasets: [
+        { label: "Arıza Adedi", data: fData },
+        { label: "Kümülatif %", data: cum, type: "line", yAxisID: "y1", pointRadius: 3 }
+      ]
+    }, {
+      responsive: true,
+      scales: {
+        y:  { beginAtZero:true, ticks:{ precision:0 } },
+        y1: { beginAtZero:true, position:"right", ticks:{ callback:v=>v+"%" } }
+      }
+    });
+
+    // 2) Aging
+    const order = ["0-2","3-5","6-10",">10"];
+    const summary = Array.isArray(agingObj?.summary) ? agingObj.summary : [];
+    const aMap  = Object.fromEntries(summary.map(x => [x.ageBucket, x.openWOCount]));
+    const aData = order.map(k => aMap[k] ?? 0);
+    upsertChart($("chartAging").getContext("2d"), "bar", {
+      labels: order, datasets: [{ label:"Açık WO", data: aData }]
+    }, { responsive:true, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 }}}});
+
+    // 3) Parçalar
+    upsertChart($("chartParts").getContext("2d"), "bar", {
+      labels: partArr.map(x => x.partName),
+      datasets: [{ label:"Tüketim (adet)", data: partArr.map(x => x.qtyOut) }]
+    }, { responsive:true, scales:{ y:{ beginAtZero:true, ticks:{ precision:0 }}}});
+
+    setStatus("Hazır", "ok");
+  }catch(err){
+    console.error(err);
+    setStatus("Hata: " + err.message, "err");
+  }finally{
+    $("refresh").disabled = false;
+  }
+}
+
+// Giriş/Çıkış/Health
+$("login").addEventListener("click", async ()=>{
+  const Base = $("base").value.trim().replace(/\/+$/,"");
+  const u = $("u").value.trim(), p = $("p").value;
+  if(!u || !p){ setStatus("Kullanıcı/parola girin","err"); return; }
+  setStatus("Giriş yapılıyor…");
+  try{
+    const r = await fetch(`${Base}/auth/login`, {
+      method:"POST", headers:{ "Content-Type":"application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ username:u, password:p })
+    });
+    if(!r.ok){ let b=""; try{b=await r.text()}catch{}; throw new Error(`${r.status} ${r.statusText} — ${b.slice(0,160)}`); }
+    const js = await r.json(); const tok = js?.access_token || "";
+    if(!tok) throw new Error("Token boş döndü.");
+    $("token").value = tok; save("dash_token", tok);
+    setStatus("Giriş başarılı","ok");
+    await loadAll();
+  }catch(e){ setStatus("Giriş hatası: " + e.message, "err"); }
+});
+
+$("logout").addEventListener("click", ()=>{ $("token").value=""; save("dash_token",""); setStatus("Çıkış yapıldı"); });
+$("health").addEventListener("click", async ()=>{
+  const Base = $("base").value.trim().replace(/\/+$/,"");
+  setStatus("Sağlık…");
+  try{ const r = await fetch(`${Base}/health`); if(!r.ok) throw new Error(`${r.status} ${r.statusText}`); setStatus("API: Tamam","ok"); }
+  catch(e){ setStatus("API erişilemedi: " + e.message,"err"); }
+});
+
+$("refresh").addEventListener("click", loadAll);
+loadAll();
+</script>
+</body>
+</html>
