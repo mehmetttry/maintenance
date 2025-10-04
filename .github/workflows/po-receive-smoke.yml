@@ -42,6 +42,43 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
+      # >>> YENİ ADIM: smoketest'te kullanılacak kullanıcıları oluştur
+      - name: Create CI users (admin/admin, store/store)
+        env:
+          MSSQL_DSN: sqlite:///./test.db
+        run: |
+          $ErrorActionPreference = 'Stop'
+          python - <<'PY'
+          import os
+          os.chdir('backend')
+          # API'nin da kullanacağı aynı DSN
+          os.environ['MSSQL_DSN'] = os.environ.get('MSSQL_DSN', 'sqlite:///./test.db')
+
+          from app.core.db import SessionLocal, Base, engine
+          from app.models.user import AppUser
+          from app.core.security import get_password_hash
+
+          # Tablo yoksa oluştur
+          Base.metadata.create_all(bind=engine)
+
+          db = SessionLocal()
+          def ensure_user(username, password, roles):
+              u = db.query(AppUser).filter_by(UserName=username).first()
+              if not u:
+                  u = AppUser(UserName=username,
+                              PasswordHash=get_password_hash(password),
+                              Roles=roles)
+                  db.add(u)
+                  db.commit()
+                  print(f"Created user: {username}/{password} ({roles})")
+              else:
+                  print(f"User exists: {username}")
+
+          ensure_user("admin", "admin", "admin")
+          ensure_user("store", "store", "store")
+          db.close()
+          PY
+
       - name: Run smoketest against local API (single step)
         env:
           DATABASE_URL: sqlite:///./test.db
