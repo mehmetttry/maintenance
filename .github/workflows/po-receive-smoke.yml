@@ -1,126 +1,35 @@
-name: PO Receive Smoke
-on:
-  workflow_dispatch:
-  push:
-
-jobs:
-  smoke:
-    runs-on: windows-latest
-    defaults:
-      run:
-        shell: pwsh
-    env:
-      PYTHONUNBUFFERED: "1"
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install -r backend/requirements.txt
-          python -m pip install "uvicorn>=0.22" "SQLAlchemy>=2" "fastapi>=0.110" "python-dotenv>=1"
-
-      - name: Seed demo data (best-effort)
-        env:
-          DATABASE_URL: sqlite:///./test.db
-          MSSQL_DSN:   sqlite:///./test.db
-        run: |
-          $ErrorActionPreference = 'Continue'
-          if (Test-Path "backend/scripts/seed_demo.py") {
-            Write-Host "Running seed script..."
-            $code = "import os,runpy; os.chdir('backend'); os.environ['PYTHONPATH']=os.getcwd(); runpy.run_path('scripts/seed_demo.py', run_name='__main__')"
-            python -c "$code"
-          } else {
-            Write-Host "Seed script not found. Skipping."
-          }
-          $global:LASTEXITCODE = 0
-
-      # >>> YENİ ADIM: smoketest'te kullanılacak kullanıcıları oluştur
       - name: Create CI users (admin/admin, store/store)
         env:
           MSSQL_DSN: sqlite:///./test.db
         run: |
           $ErrorActionPreference = 'Stop'
-          python - <<'PY'
-          import os
-          os.chdir('backend')
-          # API'nin da kullanacağı aynı DSN
-          os.environ['MSSQL_DSN'] = os.environ.get('MSSQL_DSN', 'sqlite:///./test.db')
+          $ciPy = Join-Path $env:RUNNER_TEMP 'create_ci_users.py'
+          @'
+import os
+os.chdir('backend')
+os.environ['MSSQL_DSN'] = os.environ.get('MSSQL_DSN', 'sqlite:///./test.db')
 
-          from app.core.db import SessionLocal, Base, engine
-          from app.models.user import AppUser
-          from app.core.security import get_password_hash
+from app.core.db import SessionLocal, Base, engine
+from app.models.user import AppUser
+from app.core.security import get_password_hash
 
-          # Tablo yoksa oluştur
-          Base.metadata.create_all(bind=engine)
+Base.metadata.create_all(bind=engine)
 
-          db = SessionLocal()
-          def ensure_user(username, password, roles):
-              u = db.query(AppUser).filter_by(UserName=username).first()
-              if not u:
-                  u = AppUser(UserName=username,
-                              PasswordHash=get_password_hash(password),
-                              Roles=roles)
-                  db.add(u)
-                  db.commit()
-                  print(f"Created user: {username}/{password} ({roles})")
-              else:
-                  print(f"User exists: {username}")
+db = SessionLocal()
+def ensure_user(username, password, roles):
+    u = db.query(AppUser).filter_by(UserName=username).first()
+    if not u:
+        u = AppUser(UserName=username,
+                    PasswordHash=get_password_hash(password),
+                    Roles=roles)
+        db.add(u)
+        db.commit()
+        print(f"Created user: {username}/{password} ({roles})")
+    else:
+        print(f"User exists: {username}")
 
-          ensure_user("admin", "admin", "admin")
-          ensure_user("store", "store", "store")
-          db.close()
-          PY
-
-      - name: Run smoketest against local API (single step)
-        env:
-          DATABASE_URL: sqlite:///./test.db
-          MSSQL_DSN:   sqlite:///./test.db
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $api  = "http://127.0.0.1:8011"
-          $env:API_BASE = $api
-          $logOut = "$env:RUNNER_TEMP\uvicorn.out.log"
-          $logErr = "$env:RUNNER_TEMP\uvicorn.err.log"
-
-          Write-Host "Starting Uvicorn on $api"
-          $proc = Start-Process -FilePath python `
-            -ArgumentList "-m uvicorn app.main:app --host 127.0.0.1 --port 8011" `
-            -WorkingDirectory "backend" -PassThru `
-            -RedirectStandardOutput $logOut -RedirectStandardError $logErr
-
-          try {
-            # health bekle
-            $health = "$api/health"
-            $ok = $false
-            foreach ($i in 1..60) {
-              try {
-                $r = Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3
-                if ($r.StatusCode -eq 200) { $ok = $true; break }
-              } catch { Start-Sleep -Seconds 2 }
-            }
-            if (-not $ok) {
-              Write-Host "---- Uvicorn STDOUT (health failed) ----"
-              Get-Content $logOut -ErrorAction SilentlyContinue | Out-Host
-              Write-Host "---- Uvicorn STDERR (health failed) ----"
-              Get-Content $logErr -ErrorAction SilentlyContinue | Out-Host
-              throw "API not ready: $health"
-            }
-
-            Write-Host "Using API = $api"
-            .\backend\tests\po-receive-smoketest.ps1 -PartId 1 -Cleanup -CI
-          }
-          finally {
-            Write-Host "---- Uvicorn STDOUT (final) ----"
-            Get-Content $logOut -ErrorAction SilentlyContinue | Out-Host
-            Write-Host "---- Uvicorn STDERR (final) ----"
-            Get-Content $logErr -ErrorAction SilentlyContinue | Out-Host
-            if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
-          }
+ensure_user("admin", "admin", "admin")
+ensure_user("store", "store", "store")
+db.close()
+'@ | Set-Content -Path $ciPy -Encoding utf8
+          python $ciPy
