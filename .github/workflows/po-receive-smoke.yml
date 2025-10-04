@@ -81,6 +81,8 @@ jobs:
       - name: Run PO Receive smoketest
         run: |
           $ErrorActionPreference = 'Stop'
+          $Api = "http://127.0.0.1:8011"
+          Write-Host "Using API = $Api"
           .\backend\tests\po-receive-smoketest.ps1 -PartId 1 -Cleanup -CI
 
       - name: Stop API
