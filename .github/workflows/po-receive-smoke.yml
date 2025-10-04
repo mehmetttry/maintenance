@@ -54,8 +54,8 @@ jobs:
           $job = Start-Job -ScriptBlock {
             param($logPath, $dsn)
             Set-Location "backend"
-            $env:MSSQL_DSN    = $dsn
-            $env:DATABASE_URL = $dsn
+            $env:MSSQL_DSN     = $dsn
+            $env:DATABASE_URL  = $dsn
             python -m uvicorn app.main:app --host 127.0.0.1 --port 8011 2>&1 | Tee-Object -FilePath $logPath
           } -ArgumentList $log, "sqlite:///./test.db"
 
@@ -64,8 +64,9 @@ jobs:
           $ok = $false
           foreach ($i in 1..60) {
             try {
-              $r = Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3
-              if ($r.StatusCode -eq 200) { $ok = $true; break }
+              # Başarılı olursa exception atmaz; Out-Null yeterli
+              Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+              $ok = $true; break
             } catch { Start-Sleep -Seconds 2 }
           }
 
@@ -81,20 +82,19 @@ jobs:
           Set-Content -Path "$env:RUNNER_TEMP\uvicorn_log_path.txt" -Value $log -Encoding ascii
 
       - name: Run PO Receive smoketest
-        env:
-          API_BASE: http://127.0.0.1:8011
         run: |
           $ErrorActionPreference = 'Stop'
           $Api = "http://127.0.0.1:8011"
+          $env:API_BASE = $Api
           Write-Host "Using API = $Api"
 
-          # Smoketest'ten hemen önce tekrar health kontrolü
+          # Smoketest'ten hemen önce yeniden health kontrolü (StatusCode'a bakmadan)
           $health = "$Api/health"
           $ok = $false
           foreach ($i in 1..10) {
             try {
-              $r = Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3
-              if ($r.StatusCode -eq 200) { $ok = $true; break }
+              Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+              $ok = $true; break
             } catch { Start-Sleep -Seconds 1 }
           }
           if (-not $ok) {
@@ -106,8 +106,8 @@ jobs:
             throw "API is not responding just before smoketest: $health"
           }
 
-          # Asıl test
-          .\backend\tests\po-receive-smoketest.ps1 -PartId 1 -Cleanup -CI
+          # Scripti aynı scope'ta çalıştır ki $Api görünür olsun
+          . .\backend\tests\po-receive-smoketest.ps1 -PartId 1 -Cleanup -CI
 
       - name: Stop API
         if: always()
