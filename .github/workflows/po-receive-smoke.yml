@@ -59,17 +59,15 @@ jobs:
             python -m uvicorn app.main:app --host 127.0.0.1 --port 8011 2>&1 | Tee-Object -FilePath $logPath
           } -ArgumentList $log, "sqlite:///./test.db"
 
-          # İlk health bekleyişi
+          # Sağlık kontrolü (başarısızsa bu adımda düş)
           $health = "http://$apiHost`:$apiPort/health"
           $ok = $false
           foreach ($i in 1..60) {
             try {
-              # Başarılı olursa exception atmaz; Out-Null yeterli
               Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
               $ok = $true; break
             } catch { Start-Sleep -Seconds 2 }
           }
-
           if (-not $ok) {
             Write-Host "---- Uvicorn log (startup) ----"
             Get-Content $log -ErrorAction SilentlyContinue | Out-Host
@@ -88,26 +86,30 @@ jobs:
           $env:API_BASE = $Api
           Write-Host "Using API = $Api"
 
-          # Smoketest'ten hemen önce yeniden health kontrolü (StatusCode'a bakmadan)
-          $health = "$Api/health"
-          $ok = $false
-          foreach ($i in 1..10) {
-            try {
-              Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
-              $ok = $true; break
-            } catch { Start-Sleep -Seconds 1 }
-          }
-          if (-not $ok) {
-            Write-Host "---- Uvicorn log (pre-smoketest) ----"
+          # Smoketest öncesi sağlığı YALNIZCA log amaçlı kontrol et (başarısızsa düşürme)
+          try {
+            Invoke-WebRequest -Uri "$Api/health" -UseBasicParsing -TimeoutSec 3 -ErrorAction Stop | Out-Null
+            Write-Host "Health pre-check OK"
+          } catch {
+            Write-Warning "Health pre-check failed, continuing to smoketest..."
             if (Test-Path "$env:RUNNER_TEMP\uvicorn_log_path.txt") {
               $log = Get-Content "$env:RUNNER_TEMP\uvicorn_log_path.txt" | Select-Object -First 1
+              Write-Host "---- Uvicorn log (pre-smoketest) ----"
               Get-Content $log -ErrorAction SilentlyContinue | Out-Host
             }
-            throw "API is not responding just before smoketest: $health"
           }
 
-          # Scripti aynı scope'ta çalıştır ki $Api görünür olsun
+          # Aynı scope'ta çalıştır ki $Api değişkeni ve env paylaşılsın
           . .\backend\tests\po-receive-smoketest.ps1 -PartId 1 -Cleanup -CI
+
+      - name: Dump Uvicorn log on failure
+        if: failure()
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\uvicorn_log_path.txt") {
+            $log = Get-Content "$env:RUNNER_TEMP\uvicorn_log_path.txt" | Select-Object -First 1
+            Write-Host "---- Uvicorn log (final) ----"
+            Get-Content $log -ErrorAction SilentlyContinue | Out-Host
+          }
 
       - name: Stop API
         if: always()
