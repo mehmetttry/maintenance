@@ -42,7 +42,6 @@ jobs:
           }
           $global:LASTEXITCODE = 0
 
-      # >>> API'yi başlat + smoketest'i ÇALIŞTIR + logları dök + kapat (TEK ADIM)
       - name: Run smoketest against local API (single step)
         env:
           DATABASE_URL: sqlite:///./test.db
@@ -50,17 +49,18 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $api  = "http://127.0.0.1:8011"
-          $env:API_BASE = $api      # test scripti bunu okuyabilir
-          $log = "$env:RUNNER_TEMP\uvicorn.log"
+          $env:API_BASE = $api
+          $logOut = "$env:RUNNER_TEMP\uvicorn.out.log"
+          $logErr = "$env:RUNNER_TEMP\uvicorn.err.log"
 
           Write-Host "Starting Uvicorn on $api"
           $proc = Start-Process -FilePath python `
             -ArgumentList "-m uvicorn app.main:app --host 127.0.0.1 --port 8011" `
             -WorkingDirectory "backend" -PassThru `
-            -RedirectStandardOutput $log -RedirectStandardError $log
+            -RedirectStandardOutput $logOut -RedirectStandardError $logErr
 
           try {
-            # Health bekle
+            # health bekle
             $health = "$api/health"
             $ok = $false
             foreach ($i in 1..60) {
@@ -70,18 +70,20 @@ jobs:
               } catch { Start-Sleep -Seconds 2 }
             }
             if (-not $ok) {
-              Write-Host "---- Uvicorn log (health failed) ----"
-              Get-Content $log -ErrorAction SilentlyContinue | Out-Host
+              Write-Host "---- Uvicorn STDOUT (health failed) ----"
+              Get-Content $logOut -ErrorAction SilentlyContinue | Out-Host
+              Write-Host "---- Uvicorn STDERR (health failed) ----"
+              Get-Content $logErr -ErrorAction SilentlyContinue | Out-Host
               throw "API not ready: $health"
             }
 
             Write-Host "Using API = $api"
-            # Smoketest
             .\backend\tests\po-receive-smoketest.ps1 -PartId 1 -Cleanup -CI
           }
           finally {
-            # Her durumda logları göster ve süreci öldür
-            Write-Host "---- Uvicorn log (final) ----"
-            Get-Content $log -ErrorAction SilentlyContinue | Out-Host
+            Write-Host "---- Uvicorn STDOUT (final) ----"
+            Get-Content $logOut -ErrorAction SilentlyContinue | Out-Host
+            Write-Host "---- Uvicorn STDERR (final) ----"
+            Get-Content $logErr -ErrorAction SilentlyContinue | Out-Host
             if ($proc -and -not $proc.HasExited) { Stop-Process -Id $proc.Id -Force }
           }
