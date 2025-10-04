@@ -1,35 +1,106 @@
-      - name: Create CI users (admin/admin, store/store)
+name: PO Receive Smoke
+on:
+  workflow_dispatch:
+  push:
+
+jobs:
+  smoke:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          if (Test-Path "backend/requirements.txt") {
+            python -m pip install -r backend/requirements.txt
+          }
+          python -m pip install uvicorn "SQLAlchemy>=2" fastapi python-dotenv httpx
+
+      - name: Seed demo data (best-effort)
+        shell: pwsh
         env:
+          DATABASE_URL: sqlite:///./test.db
+          MSSQL_DSN: sqlite:///./test.db
+        run: |
+          $ErrorActionPreference = 'Continue'
+          if (Test-Path "backend\scripts\seed_demo.py") {
+            Write-Host "Running seed script..."
+            Push-Location backend
+            $env:DATABASE_URL = $env:MSSQL_DSN
+            python .\scripts\seed_demo.py
+            Pop-Location
+          } else {
+            Write-Host "Seed script not found. Skipping."
+          }
+          exit 0
+
+      - name: Start API (Uvicorn) in background
+        shell: pwsh
+        env:
+          DATABASE_URL: sqlite:///./test.db
           MSSQL_DSN: sqlite:///./test.db
         run: |
           $ErrorActionPreference = 'Stop'
-          $ciPy = Join-Path $env:RUNNER_TEMP 'create_ci_users.py'
-          @'
-import os
-os.chdir('backend')
-os.environ['MSSQL_DSN'] = os.environ.get('MSSQL_DSN', 'sqlite:///./test.db')
+          $apiPort = 8011
+          $apiHost = "127.0.0.1"
 
-from app.core.db import SessionLocal, Base, engine
-from app.models.user import AppUser
-from app.core.security import get_password_hash
+          Write-Host "Starting Uvicorn on http://$apiHost`:$apiPort"
 
-Base.metadata.create_all(bind=engine)
+          $psi = New-Object System.Diagnostics.ProcessStartInfo
+          $psi.FileName = "python"
+          $psi.Arguments = "-m uvicorn app.main:app --host 127.0.0.1 --port $apiPort"
+          $psi.WorkingDirectory = "$(Resolve-Path backend)"
+          $psi.UseShellExecute = $false
+          $psi.RedirectStandardOutput = $true
+          $psi.RedirectStandardError  = $true
 
-db = SessionLocal()
-def ensure_user(username, password, roles):
-    u = db.query(AppUser).filter_by(UserName=username).first()
-    if not u:
-        u = AppUser(UserName=username,
-                    PasswordHash=get_password_hash(password),
-                    Roles=roles)
-        db.add(u)
-        db.commit()
-        print(f"Created user: {username}/{password} ({roles})")
-    else:
-        print(f"User exists: {username}")
+          $proc = New-Object System.Diagnostics.Process
+          $proc.StartInfo = $psi
+          [void]$proc.Start()
 
-ensure_user("admin", "admin", "admin")
-ensure_user("store", "store", "store")
-db.close()
-'@ | Set-Content -Path $ciPy -Encoding utf8
-          python $ciPy
+          $proc.Id | Out-File "$env:RUNNER_TEMP\uvicorn_pid.txt" -Encoding ascii
+
+          # Health check
+          $health = "http://$apiHost`:$apiPort/health"
+          $ok = $false
+          foreach ($i in 1..60) {
+            try {
+              $r = Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3
+              if ($r.StatusCode -eq 200) { $ok = $true; break }
+            } catch { Start-Sleep -Seconds 2 }
+          }
+          if (-not $ok) {
+            throw "API health endpoint is not ready: $health"
+          }
+
+      - name: Run PO Receive smoketest
+        shell: pwsh
+        env:
+          API_BASE: http://127.0.0.1:8011
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if (Test-Path ".\backend\tests\po-receive-smoketest.ps1") {
+            # Script parametreleri sizde farklıysa burayı uyarlayın
+            .\backend\tests\po-receive-smoketest.ps1 -Api $env:API_BASE -PartId 1 -Cleanup -CI
+          } else {
+            Write-Host "Smoketest script not found, skipping."
+          }
+
+      - name: Stop API
+        if: always()
+        shell: pwsh
+        run: |
+          if (Test-Path "$env:RUNNER_TEMP\uvicorn_pid.txt") {
+            $pid = Get-Content "$env:RUNNER_TEMP\uvicorn_pid.txt" | Select-Object -First 1
+            try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {}
+          }
+          Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force
