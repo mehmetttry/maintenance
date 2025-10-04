@@ -28,6 +28,7 @@ jobs:
       - name: Seed demo data (best-effort)
         env:
           DATABASE_URL: sqlite:///./test.db
+          MSSQL_DSN: sqlite:///./test.db     # <— db.py bunu bekliyor
         run: |
           $ErrorActionPreference = 'Continue'
           if (Test-Path "backend/scripts/seed_demo.py") {
@@ -37,12 +38,12 @@ jobs:
           } else {
             Write-Host "Seed script not found. Skipping."
           }
-          # Bu adımı her durumda başarılı say
-          $global:LASTEXITCODE = 0
+          $global:LASTEXITCODE = 0  # adımı her durumda başarılı say
 
       - name: Start API (Uvicorn) in background
         env:
           DATABASE_URL: sqlite:///./test.db
+          MSSQL_DSN: sqlite:///./test.db     # <— FastAPI de aynı DSN’i kullansın
         run: |
           $ErrorActionPreference = 'Stop'
           $apiPort = 8011
