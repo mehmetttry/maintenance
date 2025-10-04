@@ -22,6 +22,9 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
+          # SQLAlchemy'yi net olarak kur
+          python -m pip install SQLAlchemy==2.0.43
+          # Projenin asıl gereksinimleri
           python -m pip install -r backend/requirements.txt
 
       - name: Seed demo data (best-effort)
@@ -33,7 +36,11 @@ jobs:
             Write-Host "Running seed script..."
             $code = "import os,runpy; os.chdir('backend'); os.environ['PYTHONPATH']=os.getcwd(); runpy.run_path('scripts/seed_demo.py', run_name='__main__')"
             python -c "$code"
-            if ($LASTEXITCODE -ne 0) { Write-Host "Seed failed (non-fatal). Continuing..." }
+            $exit = $LASTEXITCODE
+            if ($exit -ne 0) {
+              Write-Host "Seed failed (non-fatal). Continuing..."
+              $global:LASTEXITCODE = 0
+            }
           } else {
             Write-Host "Seed script not found. Skipping."
           }
