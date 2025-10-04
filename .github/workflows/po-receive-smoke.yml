@@ -23,7 +23,7 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           python -m pip install -r backend/requirements.txt
-          python -m pip install "uvicorn>=0.22" "SQLAlchemy>=2" "fastapi>=0.110"
+          python -m pip install "uvicorn>=0.22" "SQLAlchemy>=2" "fastapi>=0.110" "python-dotenv>=1"
 
       - name: Seed demo data (best-effort)
         env:
@@ -54,7 +54,7 @@ jobs:
           $job = Start-Job -ScriptBlock {
             param($logPath, $dsn)
             Set-Location "backend"
-            $env:MSSQL_DSN  = $dsn
+            $env:MSSQL_DSN   = $dsn
             $env:DATABASE_URL = $dsn
             python -m uvicorn app.main:app --host 127.0.0.1 --port 8011 2>&1 | Tee-Object -FilePath $logPath
           } -ArgumentList $log, "sqlite:///./test.db"
@@ -72,7 +72,7 @@ jobs:
             Write-Host "---- Uvicorn log ----"
             Get-Content $log -ErrorAction SilentlyContinue | Out-Host
             Receive-Job $job -Keep | Out-Host
-            Stop-Job $job -Force | Out-Null
+            Stop-Job -Id $job.Id -ErrorAction SilentlyContinue | Out-Null
             throw "API health endpoint is not ready: $health"
           }
 
@@ -88,7 +88,7 @@ jobs:
         run: |
           if (Test-Path "$env:RUNNER_TEMP\uvicorn_job_id.txt") {
             $jid = Get-Content "$env:RUNNER_TEMP\uvicorn_job_id.txt" | Select-Object -First 1
-            try { Stop-Job -Id $jid -Force -ErrorAction SilentlyContinue | Out-Null } catch {}
+            try { Stop-Job -Id $jid -ErrorAction SilentlyContinue | Out-Null } catch {}
             Receive-Job -Id $jid -Keep -ErrorAction SilentlyContinue | Out-Host
           }
-          Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force
+          Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process
