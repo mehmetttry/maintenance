@@ -33,13 +33,25 @@ if not DSN or not DSN.strip():
         f"Denediğim .env: {dotenv_path or '(bulunamadı)'}"
     )
 
-engine = create_engine(
-    DSN,
+# Dialect'e göre engine argümanlarını ayarla
+dsn_lower = DSN.lower()
+is_mssql = dsn_lower.startswith("mssql") or "pyodbc" in dsn_lower
+
+engine_kwargs = dict(
     pool_pre_ping=True,
     pool_size=5,
     max_overflow=10,
-    fast_executemany=True,
 )
+
+# MSSQL + pyodbc ise hız için aktif, diğerlerinde VERME
+if is_mssql:
+    engine_kwargs["fast_executemany"] = True
+elif dsn_lower.startswith("sqlite"):
+    # SQLite için thread hatalarını önle
+    engine_kwargs["connect_args"] = {"check_same_thread": False}
+
+engine = create_engine(DSN, **engine_kwargs)
+
 
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
