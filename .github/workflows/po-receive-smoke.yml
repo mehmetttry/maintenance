@@ -108,10 +108,15 @@ jobs:
               '        Base.metadata.create_all(bind=eng)',
               'except Exception: pass',
               'con = sqlite3.connect(str(db_path)); cur = con.cursor()',
+              # temel tablolar
               'cur.execute("CREATE TABLE IF NOT EXISTS ""Part"" (""PartID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""PartCode"" TEXT, ""PartName"" TEXT, ""Unit"" TEXT, ""MinStock"" INTEGER DEFAULT 0, ""CurrentStock"" INTEGER DEFAULT 0, ""IsActive"" INTEGER DEFAULT 1)")',
               'cur.execute("CREATE TABLE IF NOT EXISTS ""AppUser"" (""UserID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""Username"" TEXT UNIQUE, ""FullName"" TEXT, ""Email"" TEXT, ""HashedPassword"" TEXT, ""Role"" TEXT, ""IsActive"" INTEGER DEFAULT 1, ""CreatedAt"" TEXT)")',
               'cur.execute("CREATE TABLE IF NOT EXISTS ""Supplier"" (""SupplierID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""Name"" TEXT, ""Phone"" TEXT, ""Email"" TEXT, ""IsActive"" INTEGER DEFAULT 1)")',
-              'cur.execute("CREATE TABLE IF NOT EXISTS ""PurchaseOrder"" (""PurchaseOrderID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""SupplierID"" INTEGER, ""PartID"" INTEGER, ""Qty"" INTEGER, ""UnitPrice"" REAL, ""PODate"" TEXT, ""ETA"" TEXT, ""Status_s"" TEXT)")',
+              # PurchaseOrder şemasını kontrol et; POID yoksa tabloyu düşür ve doğru şemayla yarat
+              'cols = [c[1] for c in cur.execute("PRAGMA table_info(""PurchaseOrder"")").fetchall()]',
+              'if cols and "POID" not in cols:',
+              '    cur.execute("DROP TABLE IF EXISTS ""PurchaseOrder""")',
+              'cur.execute("CREATE TABLE IF NOT EXISTS ""PurchaseOrder"" (""POID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""SupplierID"" INTEGER, ""PartID"" INTEGER, ""Qty"" INTEGER, ""UnitPrice"" REAL, ""PODate"" TEXT, ""ETA"" TEXT, ""Status_s"" TEXT)")',
               'con.commit()',
               'con.close()'
             )
