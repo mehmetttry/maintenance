@@ -52,9 +52,9 @@ jobs:
           $apiHost = "127.0.0.1"
 
           $pidFile = Join-Path $env:RUNNER_TEMP 'uvicorn_pid.txt'
-          $logFile = Join-Path $env:RUNNER_TEMP 'uvicorn.log'
+          $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
+          $errLog = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
 
-          # backend klasöründen çalıştır
           $wd = (Resolve-Path backend)
 
           $args = @(
@@ -62,10 +62,9 @@ jobs:
             "--host",$apiHost,"--port",$apiPort,"--log-level","info"
           )
 
-          $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru
+          $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
           $p.Id | Set-Content -Path $pidFile -Encoding ascii
 
-          # Health check
           $health = "$env:API_BASE/health"
           $ok = $false
           foreach ($i in 1..60) {
@@ -77,8 +76,10 @@ jobs:
             }
           }
           if (-not $ok) {
-            Write-Host "----- uvicorn.log (last 200 lines) -----"
-            if (Test-Path $logFile) { Get-Content $logFile -Tail 200 | Write-Host }
+            Write-Host "----- uvicorn_out.log (last 200) -----"
+            if (Test-Path $outLog) { Get-Content $outLog -Tail 200 | Write-Host }
+            Write-Host "----- uvicorn_err.log (last 200) -----"
+            if (Test-Path $errLog) { Get-Content $errLog -Tail 200 | Write-Host }
             throw "API health endpoint is not ready: $health"
           }
 
