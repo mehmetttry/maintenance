@@ -19,11 +19,13 @@ jobs:
       - name: Install dependencies
         shell: pwsh
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip wheel setuptools
           if (Test-Path "backend/requirements.txt") {
             python -m pip install -r backend/requirements.txt
           }
-          python -m pip install uvicorn "SQLAlchemy>=2" fastapi python-dotenv httpx "passlib[bcrypt]" "python-jose[cryptography]" bcrypt
+          # CI uyumlu sabit sürümler
+          python -m pip install "uvicorn" "SQLAlchemy>=2" fastapi python-dotenv httpx `
+            "passlib[bcrypt]==1.7.4" "bcrypt==3.2.2" "python-jose[cryptography]"
 
       - name: Seed demo data (best-effort)
         shell: pwsh
@@ -75,7 +77,7 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # --- login (form-encoded); yoksa register + login ---
+            # login (form-encoded); yoksa register + login
             $demoUser = "demo"
             $demoPass = "demo123"
             $form = @{ username=$demoUser; password=$demoPass }
