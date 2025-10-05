@@ -76,7 +76,7 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # --- DB şema + demo kayıtları (PS -f KULLANMADAN) ---
+            # --- DB şema + demo kayıtları (geniş import + fallback tablolar) ---
             $prep = Join-Path $env:RUNNER_TEMP 'prep_db_ci.py'
             $py = @(
               'import os, sys, sqlite3, importlib, pkgutil',
@@ -90,19 +90,20 @@ jobs:
               '    from sqlalchemy import create_engine',
               '    eng = create_engine(os.environ["DATABASE_URL"])',
               '    Base = None',
+              '    # Tüm app.* modüllerini içe aktar ki tüm modeller yüklensin',
+              '    try:',
+              '        import app',
+              '        for _, name, _ in pkgutil.walk_packages(app.__path__, app.__name__ + "."):',
+              '            try: importlib.import_module(name)',
+              '            except Exception: pass',
+              '    except Exception: pass',
+              '    # Base’i çeşitli yerlerden bulmayı dene',
               '    for modname in ("app.core.database","app.database","app.db","app.models","app"):',
               '        try:',
               '            m = importlib.import_module(modname)',
               '            if getattr(m, "Base", None) is not None:',
               '                Base = m.Base; break',
               '        except Exception: pass',
-              '    try:',
-              '        import app',
-              '        for _, name, _ in pkgutil.walk_packages(app.__path__, app.__name__+"."):',
-              '            if "models" in name:',
-              '                try: importlib.import_module(name)',
-              '                except Exception: pass',
-              '    except Exception: pass',
               '    if Base is not None:',
               '        Base.metadata.create_all(bind=eng)',
               'except Exception: pass',
@@ -110,6 +111,7 @@ jobs:
               'cur.execute("CREATE TABLE IF NOT EXISTS ""Part"" (""PartID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""PartCode"" TEXT, ""PartName"" TEXT, ""Unit"" TEXT, ""MinStock"" INTEGER DEFAULT 0, ""CurrentStock"" INTEGER DEFAULT 0, ""IsActive"" INTEGER DEFAULT 1)")',
               'cur.execute("CREATE TABLE IF NOT EXISTS ""AppUser"" (""UserID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""Username"" TEXT UNIQUE, ""FullName"" TEXT, ""Email"" TEXT, ""HashedPassword"" TEXT, ""Role"" TEXT, ""IsActive"" INTEGER DEFAULT 1, ""CreatedAt"" TEXT)")',
               'cur.execute("CREATE TABLE IF NOT EXISTS ""Supplier"" (""SupplierID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""Name"" TEXT, ""Phone"" TEXT, ""Email"" TEXT, ""IsActive"" INTEGER DEFAULT 1)")',
+              'cur.execute("CREATE TABLE IF NOT EXISTS ""PurchaseOrder"" (""PurchaseOrderID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""SupplierID"" INTEGER, ""PartID"" INTEGER, ""Qty"" INTEGER, ""UnitPrice"" REAL, ""PODate"" TEXT, ""ETA"" TEXT, ""Status_s"" TEXT)")',
               'con.commit()',
               'con.close()'
             )
@@ -163,7 +165,7 @@ jobs:
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # wrapper (GÜNCEL)
+            # wrapper
             $testsDir = Resolve-Path ".\backend\tests"
             $wrapper  = Join-Path $testsDir 'po-receive-wrapper.ci.ps1'
             $wrapLines = @(
