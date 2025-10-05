@@ -64,8 +64,8 @@ jobs:
             "--log-level","info",
             "--env-file",".env.ci"
           )
-
-          $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
+          $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd `
+               -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
 
           try {
             # health
@@ -76,68 +76,77 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # 1) önce demo kullanıcısını SQLite'a ekle (SYSDATETIME()-SQLite çakışmasını bypass)
-            $tmp = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
-            $py = @"
-import os, sqlite3
-from passlib.hash import bcrypt
-db = os.path.join('backend','test.db')
-con = sqlite3.connect(db); cur = con.cursor()
-cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='AppUser'")
-if cur.fetchone():
-    cols = [r[1] for r in cur.execute("PRAGMA table_info('AppUser')")]
-    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", ('demo',)).fetchone()
-    if not exists:
-        hp = bcrypt.hash('demo123')
-        if 'CreatedAt' in cols:
-            cur.execute('INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") VALUES (?,?,?,?,?,1,datetime("now"))', ('demo','CI Demo',None,hp,'admin'))
-        else:
-            cur.execute('INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") VALUES (?,?,?,?,?,1)', ('demo','CI Demo',None,hp,'admin'))
-        con.commit()
-con.close()
-"@
-            Set-Content -Path $tmp -Value $py -Encoding UTF8
-            python $tmp
+            # --- SQLite'a demo kullanıcıyı doğrudan ekle (MSSQL SYSDATETIME() defaultundan kaçınmak için)
+            $pyFile = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
+            $pyLines = @(
+              'import os, sqlite3',
+              'from passlib.hash import bcrypt',
+              "db = os.path.join('backend','test.db')",
+              'con = sqlite3.connect(db); cur = con.cursor()',
+              'cur.execute("SELECT name FROM sqlite_master WHERE type=''table'' AND name=''AppUser''")',
+              'if cur.fetchone():',
+              '    cols = [r[1] for r in cur.execute("PRAGMA table_info(''AppUser'')")]',
+              '    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", (''demo'',)).fetchone()',
+              '    if not exists:',
+              "        hp = bcrypt.hash('demo123')",
+              '        if "CreatedAt" in cols:',
+              '            cur.execute(' +
+              '                ''INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") ' +
+              '                 VALUES (?,?,?,?,?,1,datetime("now"))'', (''demo'',''CI Demo'',None,hp,''admin'')' +
+              '            )',
+              '        else:',
+              '            cur.execute(' +
+              '                ''INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") ' +
+              '                 VALUES (?,?,?,?,?,1)'', (''demo'',''CI Demo'',None,hp,''admin'')' +
+              '            )',
+              '        con.commit()',
+              'con.close()'
+            )
+            [System.IO.File]::WriteAllLines($pyFile, $pyLines)
+            python $pyFile
 
-            # 2) form-encoded login ile token al
+            # form-encoded login ile token al
             $form = @{ username="demo"; password="demo123" }
             $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $form).access_token
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # 3) Orijinal PS1'i geri yükle (önceki denemeler bozulmuş olabilir)
-            git checkout -- ".\backend\tests\po-receive-smoketest.ps1"
+            # Orijinal PS1'i BOZMADAN çalıştırmak için wrapper dosyasını satır satır yaz
+            $testsDir = Resolve-Path ".\backend\tests"
+            $wrapper  = Join-Path $testsDir 'po-receive-wrapper.ci.ps1'
+            $wrapLines = @(
+              'param([string]$Api,[int]$PartId=1,[switch]$Cleanup,[switch]$CI)',
+              'function Invoke-RestMethod {',
+              '  [CmdletBinding()]',
+              '  param(',
+              '    [Parameter(ValueFromPipeline=$true)]$InputObject,',
+              '    [Parameter(Position=0)][string]$Uri,',
+              '    [string]$Method,',
+              '    [object]$Body,',
+              '    [hashtable]$Headers,',
+              '    [string]$ContentType,',
+              '    [int]$TimeoutSec,',
+              '    [object]$Content',
+              '  )',
+              '  if ($Uri -match "/auth/login") {',
+              '    return [pscustomobject]@{ access_token = $env:CI_BEARER }',
+              '  }',
+              '  $ht = @{}',
+              '  if ($PSBoundParameters.ContainsKey("InputObject")) { $ht.InputObject = $InputObject }',
+              '  if ($PSBoundParameters.ContainsKey("Uri"))        { $ht.Uri        = $Uri }',
+              '  if ($PSBoundParameters.ContainsKey("Method"))     { $ht.Method     = $Method }',
+              '  if ($PSBoundParameters.ContainsKey("Body"))       { $ht.Body       = $Body }',
+              '  if ($PSBoundParameters.ContainsKey("Content"))    { $ht.Body       = $Content }',
+              '  if ($PSBoundParameters.ContainsKey("Headers"))    { $ht.Headers    = $Headers }',
+              '  if ($PSBoundParameters.ContainsKey("ContentType")){ $ht.ContentType= $ContentType }',
+              '  if ($PSBoundParameters.ContainsKey("TimeoutSec")) { $ht.TimeoutSec = $TimeoutSec }',
+              '  Microsoft.PowerShell.Utility\Invoke-RestMethod @ht',
+              '}',
+              '& (Join-Path (Split-Path $MyInvocation.MyCommand.Path) "po-receive-smoketest.ps1") -Api $Api -PartId $PartId -Cleanup:$Cleanup -CI:$CI'
+            )
+            [System.IO.File]::WriteAllLines($wrapper, $wrapLines)
 
-            # 4) Login çağrısını override eden wrapper oluştur ve çalıştır
-            $wrap = @"
-param(
-  [string]\$Api,
-  [int]\$PartId=1,
-  [switch]\$Cleanup,
-  [switch]\$CI
-)
-function Invoke-RestMethod {
-  [CmdletBinding(DefaultParameterSetName='Standard')]
-  param(
-    [Parameter(ValueFromPipeline=\$true)]\$InputObject,
-    [string]\$Uri,
-    [string]\$Method,
-    [object]\$Body,
-    [hashtable]\$Headers,
-    [string]\$ContentType,
-    [int]\$TimeoutSec
-  )
-  if (\$Uri -match '/auth/login') {
-    return @{ access_token = \$env:CI_BEARER }
-  }
-  Microsoft.PowerShell.Utility\Invoke-RestMethod @PSBoundParameters
-}
-& (Join-Path (Split-Path \$MyInvocation.MyCommand.Path) 'po-receive-smoketest.ps1') -Api \$Api -PartId \$PartId -Cleanup:\$Cleanup -CI:\$CI
-"@
-            $ciDir = Resolve-Path ".\backend\tests"
-            $wrapper = Join-Path $ciDir 'po-receive-wrapper.ci.ps1'
-            Set-Content -Path $wrapper -Value $wrap -Encoding UTF8
-
+            # wrapper üzerinden smoketest'i çalıştır
             & $wrapper -Api $api -PartId 1 -Cleanup -CI
           }
           finally {
