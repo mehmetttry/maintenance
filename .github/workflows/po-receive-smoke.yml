@@ -43,8 +43,10 @@ jobs:
       - name: Start API (Uvicorn) in background
         shell: pwsh
         env:
+          # App'in ihtiyacı olabilecek env'ler
           DATABASE_URL: sqlite:///./test.db
           MSSQL_DSN: sqlite:///./test.db
+          JWT_SECRET: test-secret-for-ci
           API_BASE: http://127.0.0.1:8011
         run: |
           $ErrorActionPreference = 'Stop'
@@ -65,15 +67,14 @@ jobs:
           $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
           $p.Id | Set-Content -Path $pidFile -Encoding ascii
 
+          # İlk health
           $health = "$env:API_BASE/health"
           $ok = $false
           foreach ($i in 1..60) {
             try {
               Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null
               $ok = $true; break
-            } catch {
-              Start-Sleep -Seconds 2
-            }
+            } catch { Start-Sleep -Seconds 2 }
           }
           if (-not $ok) {
             Write-Host "----- uvicorn_out.log (last 200) -----"
@@ -82,6 +83,14 @@ jobs:
             if (Test-Path $errLog) { Get-Content $errLog -Tail 200 | Write-Host }
             throw "API health endpoint is not ready: $health"
           }
+
+      - name: Verify API before smoketest (preflight)
+        shell: pwsh
+        env:
+          API_BASE: http://127.0.0.1:8011
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Invoke-WebRequest "$env:API_BASE/health" -UseBasicParsing -TimeoutSec 3 | Out-Null
 
       - name: Run PO Receive smoketest
         shell: pwsh
@@ -94,6 +103,17 @@ jobs:
           } else {
             Write-Host "Smoketest script not found, skipping."
           }
+
+      - name: Dump Uvicorn logs if failed
+        if: failure()
+        shell: pwsh
+        run: |
+          $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
+          $errLog = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
+          Write-Host "----- uvicorn_out.log (last 200) -----"
+          if (Test-Path $outLog) { Get-Content $outLog -Tail 200 | Write-Host }
+          Write-Host "----- uvicorn_err.log (last 200) -----"
+          if (Test-Path $errLog) { Get-Content $errLog -Tail 200 | Write-Host }
 
       - name: Stop API
         if: always()
