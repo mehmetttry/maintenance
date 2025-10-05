@@ -76,66 +76,89 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # --- SQLite'a demo kullanıcıyı doğrudan ekle (güvenli tek-satır SQL)
-            $pyFile = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
-            $pyLines = @(
-              'import os, sqlite3',
-              'from passlib.hash import bcrypt',
-              'db = os.path.join("backend","test.db")',
-              'con = sqlite3.connect(db); cur = con.cursor()',
-              'cur.execute("SELECT name FROM sqlite_master WHERE type=''table'' AND name=''AppUser''")',
-              'if cur.fetchone():',
-              '    cols = [r[1] for r in cur.execute("PRAGMA table_info(''AppUser'')")]',
-              '    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", ("demo",)).fetchone()',
-              '    if not exists:',
-              "        hp = bcrypt.hash('demo123')",
-              '        if "CreatedAt" in cols:',
-              '            sql = """INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") VALUES (?,?,?,?,?,1,datetime(''now''))"""',
-              '            cur.execute(sql, ("demo", "CI Demo", None, hp, "admin"))',
-              '        else:',
-              '            sql = """INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") VALUES (?,?,?,?,?,1)"""',
-              '            cur.execute(sql, ("demo", "CI Demo", None, hp, "admin"))',
-              '        con.commit()',
+            # --- DB şema + demo kayıtları (here-string YOK) ---
+            $prep = Join-Path $env:RUNNER_TEMP 'prep_db_ci.py'
+            $py = @(
+              'import os, sys, sqlite3, importlib, pkgutil',
+              'from pathlib import Path',
+              "root = Path.cwd()",
+              "db_path = root / 'backend' / 'test.db'",
+              'os.environ["DATABASE_URL"]="sqlite:///%s"' -f str(db_path).replace("\\","/"),
+              'os.environ["MSSQL_DSN"]=os.environ["DATABASE_URL"]',
+              'sys.path.insert(0, str(root / "backend"))',
+              'try:',
+              '    from sqlalchemy import create_engine',
+              '    eng = create_engine("sqlite:///%s")' -f str(db_path).replace("\\","/"),
+              '    Base = None',
+              '    for modname in ("app.core.database","app.database","app.db","app.models","app"):',
+              '        try:',
+              '            m = importlib.import_module(modname)',
+              '            if hasattr(m,"Base") and getattr(m,"Base",None) is not None:',
+              '                Base = getattr(m,"Base"); break',
+              '        except Exception: pass',
+              '    try:',
+              '        import app',
+              '        for _, name, _ in pkgutil.walk_packages(app.__path__, app.__name__+"."):',
+              '            if "models" in name:',
+              '                try: importlib.import_module(name)',
+              '                except Exception: pass',
+              '    except Exception: pass',
+              '    if Base is not None:',
+              '        Base.metadata.create_all(bind=eng)',
+              'except Exception: pass',
+              'con = sqlite3.connect(str(db_path)); cur = con.cursor()',
+              'cur.execute("CREATE TABLE IF NOT EXISTS ""Part"" (""PartID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""PartCode"" TEXT, ""PartName"" TEXT, ""Unit"" TEXT, ""MinStock"" INTEGER DEFAULT 0, ""CurrentStock"" INTEGER DEFAULT 0, ""IsActive"" INTEGER DEFAULT 1)")',
+              'cur.execute("CREATE TABLE IF NOT EXISTS ""AppUser"" (""UserID"" INTEGER PRIMARY KEY AUTOINCREMENT, ""Username"" TEXT UNIQUE, ""FullName"" TEXT, ""Email"" TEXT, ""HashedPassword"" TEXT, ""Role"" TEXT, ""IsActive"" INTEGER DEFAULT 1, ""CreatedAt"" TEXT)")',
+              'con.commit()',
               'con.close()'
             )
-            [System.IO.File]::WriteAllLines($pyFile, $pyLines)
-            python $pyFile
+            [System.IO.File]::WriteAllLines($prep, $py)
+            python $prep
 
-            # form-encoded login ile token al
+            # --- AppUser: demo/demo123 ---
+            $seedUser = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
+            $py2 = @(
+              'import os, sqlite3',
+              'from passlib.hash import bcrypt',
+              "db = os.path.join('backend','test.db')",
+              'con = sqlite3.connect(db); cur = con.cursor()',
+              'hp = bcrypt.hash("demo123")',
+              'cur.execute("INSERT OR IGNORE INTO ""AppUser"" (""Username"",""FullName"",""Email"",""HashedPassword"",""Role"",""IsActive"",""CreatedAt"") VALUES (?,?,?,?,?,1,datetime(''now''))", ("demo","CI Demo",None,hp,"admin"))',
+              'con.commit(); con.close()'
+            )
+            [System.IO.File]::WriteAllLines($seedUser, $py2)
+            python $seedUser
+
+            # --- Part: ID=1 varsa bırak, yoksa ekle ---
+            $seedPart = Join-Path $env:RUNNER_TEMP 'seed_part_ci.py'
+            $py3 = @(
+              'import os, sqlite3',
+              "db = os.path.join('backend','test.db')",
+              'con = sqlite3.connect(db); cur = con.cursor()',
+              'ex = cur.execute("SELECT 1 FROM ""Part"" WHERE ""PartID""=1").fetchone()',
+              'if not ex:',
+              '    cur.execute("INSERT INTO ""Part"" (""PartID"",""PartCode"",""PartName"",""Unit"",""MinStock"",""CurrentStock"",""IsActive"") VALUES (1,?,?,?,?,?,1)", ("DEMO-001","Demo Parça","EA",0,100))',
+              'con.commit(); con.close()'
+            )
+            [System.IO.File]::WriteAllLines($seedPart, $py3)
+            python $seedPart
+
+            # login
             $form = @{ username="demo"; password="demo123" }
             $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $form).access_token
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # wrapper (yalnızca /auth/login için token döndürür)
+            # wrapper
             $testsDir = Resolve-Path ".\backend\tests"
             $wrapper  = Join-Path $testsDir 'po-receive-wrapper.ci.ps1'
             $wrapLines = @(
               'param([string]$Api,[int]$PartId=1,[switch]$Cleanup,[switch]$CI)',
               'function Invoke-RestMethod {',
               '  [CmdletBinding()]',
-              '  param(',
-              '    [Parameter(ValueFromPipeline=$true)]$InputObject,',
-              '    [Parameter(Position=0)][string]$Uri,',
-              '    [string]$Method,',
-              '    [object]$Body,',
-              '    [hashtable]$Headers,',
-              '    [string]$ContentType,',
-              '    [int]$TimeoutSec,',
-              '    [object]$Content',
-              '  )',
-              '  if ($Uri -match "/auth/login") {',
-              '    return [pscustomobject]@{ access_token = $env:CI_BEARER }',
-              '  }',
-              '  $ht = @{}',
-              '  if ($PSBoundParameters.ContainsKey("InputObject")) { $ht.InputObject = $InputObject }',
-              '  if ($PSBoundParameters.ContainsKey("Uri"))        { $ht.Uri        = $Uri }',
-              '  if ($PSBoundParameters.ContainsKey("Method"))     { $ht.Method     = $Method }',
-              '  if ($PSBoundParameters.ContainsKey("Body"))       { $ht.Body       = $Body }',
-              '  if ($PSBoundParameters.ContainsKey("Content"))    { $ht.Body       = $Content }',
-              '  if ($PSBoundParameters.ContainsKey("Headers"))    { $ht.Headers    = $Headers }',
-              '  if ($PSBoundParameters.ContainsKey("ContentType")){ $ht.ContentType= $ContentType }',
-              '  if ($PSBoundParameters.ContainsKey("TimeoutSec")) { $ht.TimeoutSec = $TimeoutSec }',
+              '  param([Parameter(ValueFromPipeline=$true)]$InputObject,[string]$Uri,[string]$Method,[object]$Body,[hashtable]$Headers,[string]$ContentType,[int]$TimeoutSec,[object]$Content)',
+              '  if ($Uri -match "/auth/login") { return [pscustomobject]@{ access_token = $env:CI_BEARER } }',
+              '  $ht=@{}; foreach($k in $PSBoundParameters.Keys){ $ht[$k]=$PSBoundParameters[$k] }',
               '  Microsoft.PowerShell.Utility\Invoke-RestMethod @ht',
               '}',
               '& (Join-Path (Split-Path $MyInvocation.MyCommand.Path) "po-receive-smoketest.ps1") -Api $Api -PartId $PartId -Cleanup:$Cleanup -CI:$CI'
