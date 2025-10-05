@@ -33,13 +33,10 @@ jobs:
         run: |
           $ErrorActionPreference = 'Continue'
           if (Test-Path "backend\scripts\seed_demo.py") {
-            Write-Host "Running seed script..."
             Push-Location backend
             $env:DATABASE_URL = $env:MSSQL_DSN
             python .\scripts\seed_demo.py
             Pop-Location
-          } else {
-            Write-Host "Seed script not found. Skipping."
           }
           exit 0
 
@@ -48,37 +45,40 @@ jobs:
         env:
           DATABASE_URL: sqlite:///./test.db
           MSSQL_DSN: sqlite:///./test.db
+          API_BASE: http://127.0.0.1:8011
         run: |
           $ErrorActionPreference = 'Stop'
           $apiPort = 8011
           $apiHost = "127.0.0.1"
 
-          Write-Host "Starting Uvicorn on http://$apiHost`:$apiPort"
+          $pidFile = Join-Path $env:RUNNER_TEMP 'uvicorn_pid.txt'
+          $logFile = Join-Path $env:RUNNER_TEMP 'uvicorn.log'
 
-          $psi = New-Object System.Diagnostics.ProcessStartInfo
-          $psi.FileName = "python"
-          $psi.Arguments = "-m uvicorn app.main:app --host 127.0.0.1 --port $apiPort"
-          $psi.WorkingDirectory = "$(Resolve-Path backend)"
-          $psi.UseShellExecute = $false
-          $psi.RedirectStandardOutput = $true
-          $psi.RedirectStandardError  = $true
+          # backend klasöründen çalıştır
+          $wd = (Resolve-Path backend)
 
-          $proc = New-Object System.Diagnostics.Process
-          $proc.StartInfo = $psi
-          [void]$proc.Start()
+          $args = @(
+            "-m","uvicorn","app.main:app",
+            "--host",$apiHost,"--port",$apiPort,"--log-level","info"
+          )
 
-          $proc.Id | Out-File "$env:RUNNER_TEMP\uvicorn_pid.txt" -Encoding ascii
+          $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $logFile -RedirectStandardError $logFile -PassThru
+          $p.Id | Set-Content -Path $pidFile -Encoding ascii
 
           # Health check
-          $health = "http://$apiHost`:$apiPort/health"
+          $health = "$env:API_BASE/health"
           $ok = $false
           foreach ($i in 1..60) {
             try {
-              $r = Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3
-              if ($r.StatusCode -eq 200) { $ok = $true; break }
-            } catch { Start-Sleep -Seconds 2 }
+              Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null
+              $ok = $true; break
+            } catch {
+              Start-Sleep -Seconds 2
+            }
           }
           if (-not $ok) {
+            Write-Host "----- uvicorn.log (last 200 lines) -----"
+            if (Test-Path $logFile) { Get-Content $logFile -Tail 200 | Write-Host }
             throw "API health endpoint is not ready: $health"
           }
 
@@ -89,7 +89,6 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if (Test-Path ".\backend\tests\po-receive-smoketest.ps1") {
-            # Script parametreleri sizde farklıysa burayı uyarlayın
             .\backend\tests\po-receive-smoketest.ps1 -Api $env:API_BASE -PartId 1 -Cleanup -CI
           } else {
             Write-Host "Smoketest script not found, skipping."
@@ -99,8 +98,9 @@ jobs:
         if: always()
         shell: pwsh
         run: |
-          if (Test-Path "$env:RUNNER_TEMP\uvicorn_pid.txt") {
-            $pid = Get-Content "$env:RUNNER_TEMP\uvicorn_pid.txt" | Select-Object -First 1
-            try { Stop-Process -Id $pid -Force -ErrorAction SilentlyContinue } catch {}
+          $pidFile = Join-Path $env:RUNNER_TEMP 'uvicorn_pid.txt'
+          if (Test-Path $pidFile) {
+            $uv_pid = Get-Content $pidFile | Select-Object -First 1
+            try { Stop-Process -Id $uv_pid -Force -ErrorAction SilentlyContinue } catch {}
           }
           Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force
