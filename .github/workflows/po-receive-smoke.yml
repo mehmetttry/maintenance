@@ -2,10 +2,16 @@ name: PO Receive Smoke
 on:
   workflow_dispatch:
   push:
+  pull_request:
+
+concurrency:
+  group: po-smoke-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   smoke:
     runs-on: windows-latest
+    timeout-minutes: 10
 
     steps:
       - name: Checkout
@@ -15,6 +21,14 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+          restore-keys: |
+            ${{ runner.os }}-pip-
 
       - name: Install dependencies
         shell: pwsh
@@ -216,3 +230,10 @@ jobs:
             if (Test-Path $outLog) { Write-Host "----- uvicorn_out.log (last 200) -----"; Get-Content $outLog -Tail 200 | Write-Host }
             if (Test-Path $errLog) { Write-Host "----- uvicorn_err.log (last 200) -----"; Get-Content $errLog -Tail 200 | Write-Host }
           }
+
+      - name: Upload logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-logs
+          path: ${{ runner.temp }}/uvicorn_*.log
