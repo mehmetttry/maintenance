@@ -76,25 +76,25 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # --- DB şema + demo kayıtları (here-string YOK) ---
+            # --- DB şema + demo kayıtları (PS -f KULLANMADAN) ---
             $prep = Join-Path $env:RUNNER_TEMP 'prep_db_ci.py'
             $py = @(
               'import os, sys, sqlite3, importlib, pkgutil',
               'from pathlib import Path',
-              "root = Path.cwd()",
+              'root = Path.cwd()',
               "db_path = root / 'backend' / 'test.db'",
-              'os.environ["DATABASE_URL"]="sqlite:///%s"' -f str(db_path).replace("\\","/"),
-              'os.environ["MSSQL_DSN"]=os.environ["DATABASE_URL"]',
+              'os.environ["DATABASE_URL"] = f"sqlite:///{db_path.as_posix()}"',
+              'os.environ["MSSQL_DSN"] = os.environ["DATABASE_URL"]',
               'sys.path.insert(0, str(root / "backend"))',
               'try:',
               '    from sqlalchemy import create_engine',
-              '    eng = create_engine("sqlite:///%s")' -f str(db_path).replace("\\","/"),
+              '    eng = create_engine(os.environ["DATABASE_URL"])',
               '    Base = None',
               '    for modname in ("app.core.database","app.database","app.db","app.models","app"):',
               '        try:',
               '            m = importlib.import_module(modname)',
-              '            if hasattr(m,"Base") and getattr(m,"Base",None) is not None:',
-              '                Base = getattr(m,"Base"); break',
+              '            if getattr(m, "Base", None) is not None:',
+              '                Base = m.Base; break',
               '        except Exception: pass',
               '    try:',
               '        import app',
