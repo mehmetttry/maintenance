@@ -90,14 +90,14 @@ jobs:
               '    from sqlalchemy import create_engine',
               '    eng = create_engine(os.environ["DATABASE_URL"])',
               '    Base = None',
-              '    # Tüm app.* modüllerini içe aktar ki tüm modeller yüklensin',
+              '    # Tum app.* modullerini ice aktar ki tum modeller yüklensin',
               '    try:',
               '        import app',
               '        for _, name, _ in pkgutil.walk_packages(app.__path__, app.__name__ + "."):',
               '            try: importlib.import_module(name)',
               '            except Exception: pass',
               '    except Exception: pass',
-              '    # Base’i çeşitli yerlerden bulmayı dene',
+              '    # Base i cesitli yerlerden bulmayi dene',
               '    for modname in ("app.core.database","app.database","app.db","app.models","app"):',
               '        try:',
               '            m = importlib.import_module(modname)',
@@ -138,8 +138,8 @@ jobs:
               'import os, sqlite3',
               "db = os.path.join('backend','test.db')",
               'con = sqlite3.connect(db); cur = con.cursor()',
-              'cur.execute("INSERT OR IGNORE INTO ""Supplier"" (""SupplierID"",""Name"",""Phone"",""Email"",""IsActive"") VALUES (1,?,?,?,1)", ("Demo Tedarikçi A","000","a@example.com"))',
-              'cur.execute("INSERT OR IGNORE INTO ""Supplier"" (""SupplierID"",""Name"",""Phone"",""Email"",""IsActive"") VALUES (2,?,?,?,1)", ("Demo Tedarikçi B","000","b@example.com"))',
+              'cur.execute("INSERT OR IGNORE INTO ""Supplier"" (""SupplierID"",""Name"",""Phone"",""Email"",""IsActive"") VALUES (1,?,?,?,1)", ("Demo Tedarikci A","000","a@example.com"))',
+              'cur.execute("INSERT OR IGNORE INTO ""Supplier"" (""SupplierID"",""Name"",""Phone"",""Email"",""IsActive"") VALUES (2,?,?,?,1)", ("Demo Tedarikci B","000","b@example.com"))',
               'con.commit(); con.close()'
             )
             [System.IO.File]::WriteAllLines($seedSup, $pyS)
@@ -153,7 +153,7 @@ jobs:
               'con = sqlite3.connect(db); cur = con.cursor()',
               'ex = cur.execute("SELECT 1 FROM ""Part"" WHERE ""PartID""=1").fetchone()',
               'if not ex:',
-              '    cur.execute("INSERT INTO ""Part"" (""PartID"",""PartCode"",""PartName"",""Unit"",""MinStock"",""CurrentStock"",""IsActive"") VALUES (1,?,?,?,?,?,1)", ("DEMO-001","Demo Parça","EA",0,100))',
+              '    cur.execute("INSERT INTO ""Part"" (""PartID"",""PartCode"",""PartName"",""Unit"",""MinStock"",""CurrentStock"",""IsActive"") VALUES (1,?,?,?,?,?,1)", ("DEMO-001","Demo Parca","EA",0,100))',
               'con.commit(); con.close()'
             )
             [System.IO.File]::WriteAllLines($seedPart, $py3)
