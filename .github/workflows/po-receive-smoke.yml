@@ -3,15 +3,17 @@ on:
   workflow_dispatch:
   push:
   pull_request:
+  schedule:
+    - cron: "0 2 * * *" # her gece 05:00 TR civarı (UTC 02:00)
 
 concurrency:
-  group: po-smoke-${{ github.ref }}
+  group: smoke-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   smoke:
     runs-on: windows-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
 
     steps:
       - name: Checkout
@@ -21,14 +23,10 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
-          restore-keys: |
-            ${{ runner.os }}-pip-
+          cache: "pip"
+          cache-dependency-path: |
+            backend/requirements.txt
+            **/po-receive-smoke.yml # cache anahtarını değiştirmek istersen
 
       - name: Install dependencies
         shell: pwsh
@@ -82,10 +80,10 @@ jobs:
                -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
 
           try {
-            # health
+            # health (PS7’de -UseBasicParsing yok; kaldırdık)
             $health = "$api/health"
             foreach ($i in 1..60) {
-              try { Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null; break }
+              try { Invoke-WebRequest -Uri $health -TimeoutSec 3 | Out-Null; break }
               catch { Start-Sleep -Seconds 1 }
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
@@ -235,5 +233,6 @@ jobs:
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: api-logs
+          name: smoke-logs
           path: ${{ runner.temp }}/uvicorn_*.log
+          retention-days: 7
