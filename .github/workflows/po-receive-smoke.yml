@@ -50,20 +50,16 @@ jobs:
           $apiHost = "127.0.0.1"
 
           $pidFile = Join-Path $env:RUNNER_TEMP 'uvicorn_pid.txt'
-          $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
-          $errLog = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
+          $outLog  = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
+          $errLog  = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
 
-          # CI ortamı için .env dosyası oluştur
           $wd = (Resolve-Path backend)
           $envFile = Join-Path $wd '.env.ci'
-          @"
-MSSQL_DSN=sqlite:///./test.db
-DATABASE_URL=sqlite:///./test.db
-JWT_SECRET=test-secret-for-ci
-API_BASE=http://127.0.0.1:8011
-"@ | Set-Content -Path $envFile -Encoding UTF8
 
-          # Uvicorn'ı backend klasöründen başlat (app.main:app)
+          # .env.ci içeriğini T-E-K satırda yaz (YAML ile çakışmasın)
+          $envText = "MSSQL_DSN=sqlite:///./test.db`nDATABASE_URL=sqlite:///./test.db`nJWT_SECRET=test-secret-for-ci`nAPI_BASE=http://127.0.0.1:8011"
+          Set-Content -Path $envFile -Value $envText -Encoding UTF8
+
           $args = @(
             "-m","uvicorn","app.main:app",
             "--host",$apiHost,"--port",$apiPort,
@@ -75,15 +71,13 @@ API_BASE=http://127.0.0.1:8011
           $p.Id | Set-Content -Path $pidFile -Encoding ascii
 
           # Health bekle
-          $health = "$env:API_BASE/health"
+          $health = "http://$apiHost`:$apiPort/health"
           $ok = $false
           foreach ($i in 1..60) {
             try {
               Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null
               $ok = $true; break
-            } catch {
-              Start-Sleep -Seconds 2
-            }
+            } catch { Start-Sleep -Seconds 2 }
           }
           if (-not $ok) {
             Write-Host "----- uvicorn_out.log (last 200) -----"
