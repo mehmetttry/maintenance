@@ -76,29 +76,25 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # --- SQLite'a demo kullanıcıyı doğrudan ekle (MSSQL SYSDATETIME() defaultundan kaçınmak için)
+            # --- SQLite'a demo kullanıcıyı doğrudan ekle (güvenli tek-satır SQL)
             $pyFile = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
             $pyLines = @(
               'import os, sqlite3',
               'from passlib.hash import bcrypt',
-              "db = os.path.join('backend','test.db')",
+              'db = os.path.join("backend","test.db")',
               'con = sqlite3.connect(db); cur = con.cursor()',
               'cur.execute("SELECT name FROM sqlite_master WHERE type=''table'' AND name=''AppUser''")',
               'if cur.fetchone():',
               '    cols = [r[1] for r in cur.execute("PRAGMA table_info(''AppUser'')")]',
-              '    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", (''demo'',)).fetchone()',
+              '    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", ("demo",)).fetchone()',
               '    if not exists:',
               "        hp = bcrypt.hash('demo123')",
               '        if "CreatedAt" in cols:',
-              '            cur.execute(' +
-              '                ''INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") ' +
-              '                 VALUES (?,?,?,?,?,1,datetime("now"))'', (''demo'',''CI Demo'',None,hp,''admin'')' +
-              '            )',
+              '            sql = """INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") VALUES (?,?,?,?,?,1,datetime(''now''))"""',
+              '            cur.execute(sql, ("demo", "CI Demo", None, hp, "admin"))',
               '        else:',
-              '            cur.execute(' +
-              '                ''INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") ' +
-              '                 VALUES (?,?,?,?,?,1)'', (''demo'',''CI Demo'',None,hp,''admin'')' +
-              '            )',
+              '            sql = """INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") VALUES (?,?,?,?,?,1)"""',
+              '            cur.execute(sql, ("demo", "CI Demo", None, hp, "admin"))',
               '        con.commit()',
               'con.close()'
             )
@@ -111,7 +107,7 @@ jobs:
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # Orijinal PS1'i BOZMADAN çalıştırmak için wrapper dosyasını satır satır yaz
+            # wrapper (yalnızca /auth/login için token döndürür)
             $testsDir = Resolve-Path ".\backend\tests"
             $wrapper  = Join-Path $testsDir 'po-receive-wrapper.ci.ps1'
             $wrapLines = @(
@@ -146,7 +142,6 @@ jobs:
             )
             [System.IO.File]::WriteAllLines($wrapper, $wrapLines)
 
-            # wrapper üzerinden smoketest'i çalıştır
             & $wrapper -Api $api -PartId 1 -Cleanup -CI
           }
           finally {
