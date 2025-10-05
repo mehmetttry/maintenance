@@ -40,25 +40,21 @@ jobs:
           }
           exit 0
 
-      - name: Start API (Uvicorn) in background
+      - name: Start API & Run smoketest (same step)
         shell: pwsh
-        env:
-          API_BASE: http://127.0.0.1:8011
         run: |
           $ErrorActionPreference = 'Stop'
           $apiPort = 8011
           $apiHost = "127.0.0.1"
+          $wd      = (Resolve-Path backend)
 
-          $pidFile = Join-Path $env:RUNNER_TEMP 'uvicorn_pid.txt'
-          $outLog  = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
-          $errLog  = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
-
-          $wd = (Resolve-Path backend)
+          # .env.ci
           $envFile = Join-Path $wd '.env.ci'
-
-          # .env.ci içeriğini T-E-K satırda yaz (YAML ile çakışmasın)
           $envText = "MSSQL_DSN=sqlite:///./test.db`nDATABASE_URL=sqlite:///./test.db`nJWT_SECRET=test-secret-for-ci`nAPI_BASE=http://127.0.0.1:8011"
           Set-Content -Path $envFile -Value $envText -Encoding UTF8
+
+          $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
+          $errLog = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
 
           $args = @(
             "-m","uvicorn","app.main:app",
@@ -68,63 +64,26 @@ jobs:
           )
 
           $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
-          $p.Id | Set-Content -Path $pidFile -Encoding ascii
 
-          # Health bekle
-          $health = "http://$apiHost`:$apiPort/health"
-          $ok = $false
-          foreach ($i in 1..60) {
-            try {
-              Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null
-              $ok = $true; break
-            } catch { Start-Sleep -Seconds 2 }
+          try {
+            # Wait health
+            $health = "http://$apiHost`:$apiPort/health"
+            $ok = $false
+            foreach ($i in 1..60) {
+              try { Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null; $ok = $true; break }
+              catch { Start-Sleep -Seconds 1 }
+            }
+            if (-not $ok) { throw "API not healthy: $health" }
+
+            # Smoketest
+            if (Test-Path ".\backend\tests\po-receive-smoketest.ps1") {
+              .\backend\tests\po-receive-smoketest.ps1 -Api "http://$apiHost`:$apiPort" -PartId 1 -Cleanup -CI
+            } else {
+              Write-Host "Smoketest script not found, skipping."
+            }
           }
-          if (-not $ok) {
-            Write-Host "----- uvicorn_out.log (last 200) -----"
-            if (Test-Path $outLog) { Get-Content $outLog -Tail 200 | Write-Host }
-            Write-Host "----- uvicorn_err.log (last 200) -----"
-            if (Test-Path $errLog) { Get-Content $errLog -Tail 200 | Write-Host }
-            throw "API health endpoint is not ready: $health"
+          finally {
+            try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+            if (Test-Path $outLog) { Write-Host "----- uvicorn_out.log (last 200) -----"; Get-Content $outLog -Tail 200 | Write-Host }
+            if (Test-Path $errLog) { Write-Host "----- uvicorn_err.log (last 200) -----"; Get-Content $errLog -Tail 200 | Write-Host }
           }
-
-      - name: Verify API before smoketest (preflight)
-        shell: pwsh
-        env:
-          API_BASE: http://127.0.0.1:8011
-        run: |
-          $ErrorActionPreference = 'Stop'
-          Invoke-WebRequest "$env:API_BASE/health" -UseBasicParsing -TimeoutSec 3 | Out-Null
-
-      - name: Run PO Receive smoketest
-        shell: pwsh
-        env:
-          API_BASE: http://127.0.0.1:8011
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if (Test-Path ".\backend\tests\po-receive-smoketest.ps1") {
-            .\backend\tests\po-receive-smoketest.ps1 -Api $env:API_BASE -PartId 1 -Cleanup -CI
-          } else {
-            Write-Host "Smoketest script not found, skipping."
-          }
-
-      - name: Dump Uvicorn logs if failed
-        if: failure()
-        shell: pwsh
-        run: |
-          $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
-          $errLog = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
-          Write-Host "----- uvicorn_out.log (last 200) -----"
-          if (Test-Path $outLog) { Get-Content $outLog -Tail 200 | Write-Host }
-          Write-Host "----- uvicorn_err.log (last 200) -----"
-          if (Test-Path $errLog) { Get-Content $errLog -Tail 200 | Write-Host }
-
-      - name: Stop API
-        if: always()
-        shell: pwsh
-        run: |
-          $pidFile = Join-Path $env:RUNNER_TEMP 'uvicorn_pid.txt'
-          if (Test-Path $pidFile) {
-            $uv_pid = Get-Content $pidFile | Select-Object -First 1
-            try { Stop-Process -Id $uv_pid -Force -ErrorAction SilentlyContinue } catch {}
-          }
-          Get-Process -Name python -ErrorAction SilentlyContinue | Stop-Process -Force
