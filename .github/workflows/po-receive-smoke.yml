@@ -149,16 +149,33 @@ jobs:
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # wrapper
+            # wrapper (GÜNCEL)
             $testsDir = Resolve-Path ".\backend\tests"
             $wrapper  = Join-Path $testsDir 'po-receive-wrapper.ci.ps1'
             $wrapLines = @(
               'param([string]$Api,[int]$PartId=1,[switch]$Cleanup,[switch]$CI)',
               'function Invoke-RestMethod {',
               '  [CmdletBinding()]',
-              '  param([Parameter(ValueFromPipeline=$true)]$InputObject,[string]$Uri,[string]$Method,[object]$Body,[hashtable]$Headers,[string]$ContentType,[int]$TimeoutSec,[object]$Content)',
-              '  if ($Uri -match "/auth/login") { return [pscustomobject]@{ access_token = $env:CI_BEARER } }',
-              '  $ht=@{}; foreach($k in $PSBoundParameters.Keys){ $ht[$k]=$PSBoundParameters[$k] }',
+              '  param(',
+              '    [Parameter(Position=0)][string]$Uri,',
+              '    [string]$Method,',
+              '    [object]$Body,',
+              '    [hashtable]$Headers,',
+              '    [string]$ContentType,',
+              '    [int]$TimeoutSec,',
+              '    [object]$Content',
+              '  )',
+              '  if ($Uri -match "/auth/login") {',
+              '    return [pscustomobject]@{ access_token = $env:CI_BEARER }',
+              '  }',
+              '  $ht = @{}',
+              '  if ($PSBoundParameters.ContainsKey("Uri"))        { $ht.Uri        = $Uri }',
+              '  if ($PSBoundParameters.ContainsKey("Method"))     { $ht.Method     = $Method }',
+              '  if ($PSBoundParameters.ContainsKey("Body"))       { $ht.Body       = $Body }',
+              '  elseif ($PSBoundParameters.ContainsKey("Content")){ $ht.Body       = $Content }',
+              '  if ($PSBoundParameters.ContainsKey("Headers"))    { $ht.Headers    = $Headers }',
+              '  if ($PSBoundParameters.ContainsKey("ContentType")){ $ht.ContentType= $ContentType }',
+              '  if ($PSBoundParameters.ContainsKey("TimeoutSec")) { $ht.TimeoutSec = $TimeoutSec }',
               '  Microsoft.PowerShell.Utility\Invoke-RestMethod @ht',
               '}',
               '& (Join-Path (Split-Path $MyInvocation.MyCommand.Path) "po-receive-smoketest.ps1") -Api $Api -PartId $PartId -Cleanup:$Cleanup -CI:$CI'
