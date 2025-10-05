@@ -46,11 +46,12 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $apiPort = 8011
           $apiHost = "127.0.0.1"
+          $api     = "http://$apiHost`:$apiPort"
           $wd      = (Resolve-Path backend)
 
           # .env.ci
           $envFile = Join-Path $wd '.env.ci'
-          $envText = "MSSQL_DSN=sqlite:///./test.db`nDATABASE_URL=sqlite:///./test.db`nJWT_SECRET=test-secret-for-ci`nAPI_BASE=http://127.0.0.1:8011"
+          $envText = "MSSQL_DSN=sqlite:///./test.db`nDATABASE_URL=sqlite:///./test.db`nJWT_SECRET=test-secret-for-ci`nAPI_BASE=$api"
           Set-Content -Path $envFile -Value $envText -Encoding UTF8
 
           $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
@@ -66,18 +67,36 @@ jobs:
           $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
 
           try {
-            # Wait health
-            $health = "http://$apiHost`:$apiPort/health"
-            $ok = $false
+            # Health bekle
+            $health = "$api/health"
             foreach ($i in 1..60) {
-              try { Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null; $ok = $true; break }
+              try { Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null; break }
               catch { Start-Sleep -Seconds 1 }
+              if ($i -eq 60) { throw "API not healthy: $health" }
             }
-            if (-not $ok) { throw "API not healthy: $health" }
 
-            # Smoketest
+            # === CI için DEMO kullanıcıyı oluştur (varsa sorun etme) ===
+            $hdr = @{ "Content-Type" = "application/json" }
+            $demoUser = "demo"
+            $demoPass = "demo123"
+
+            try {
+              $regBody = @{ username=$demoUser; password=$demoPass; full_name="CI Demo"; role="admin" } | ConvertTo-Json
+              Invoke-RestMethod "$api/auth/register" -Method Post -Headers $hdr -Body $regBody | Out-Null
+              Write-Host "demo kullanıcısı oluşturuldu."
+            } catch {
+              Write-Host "register muhtemelen mevcut, devam ediyorum."
+            }
+
+            # === Smoketest scripti öncesi bir kez login doğrula ===
+            $loginBody = @{ username=$demoUser; password=$demoPass } | ConvertTo-Json
+            $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -Headers $hdr -Body $loginBody).access_token
+            if (-not $tok) { throw "Login başarısız (ön kontrol)" }
+            Write-Host "Login OK (ön kontrol)."
+
+            # === Asıl smoketest scriptini çalıştır (varsa) ===
             if (Test-Path ".\backend\tests\po-receive-smoketest.ps1") {
-              .\backend\tests\po-receive-smoketest.ps1 -Api "http://$apiHost`:$apiPort" -PartId 1 -Cleanup -CI
+              .\backend\tests\po-receive-smoketest.ps1 -Api $api -PartId 1 -Cleanup -CI
             } else {
               Write-Host "Smoketest script not found, skipping."
             }
