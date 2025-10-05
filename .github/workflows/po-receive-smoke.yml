@@ -76,51 +76,44 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # login (form-encoded). Gerekirse SQLite'a doğrudan kullanıcı ekle (SYSDATETIME() defaultunu bypass).
+            # login; gerekirse doğrudan SQLite ile demo kullanıcı ekle (register çağırma)
             $demoUser = "demo"
             $demoPass = "demo123"
             $form = @{ username=$demoUser; password=$demoPass }
 
-            $needSeed = $false
+            $tok = $null
             try {
               $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $form).access_token
             } catch {
-              $needSeed = $true
-            }
-
-            if ($needSeed) {
-              $py = @"
-import os, sqlite3
-from passlib.hash import bcrypt
-db = os.path.join('backend','test.db')
-con = sqlite3.connect(db)
-cur = con.cursor()
-cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='AppUser'")
-if cur.fetchone():
-    cols = [r[1] for r in cur.execute("PRAGMA table_info('AppUser')")]
-    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", ('demo',)).fetchone()
-    if not exists:
-        hp = bcrypt.hash('demo123')
-        if 'CreatedAt' in cols:
-            cur.execute('INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") VALUES (?,?,?,?,?,1,datetime("now"))',
-                        ('demo','CI Demo',None,hp,'admin'))
-        else:
-            cur.execute('INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") VALUES (?,?,?,?,?,1)',
-                        ('demo','CI Demo',None,hp,'admin'))
-        con.commit()
-con.close()
-"@
               $tmp = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
-              Set-Content -Path $tmp -Value $py -Encoding UTF8
+              $pyLines = @(
+                "import os, sqlite3",
+                "from passlib.hash import bcrypt",
+                "db = os.path.join('backend','test.db')",
+                "con = sqlite3.connect(db)",
+                "cur = con.cursor()",
+                "cur.execute(""SELECT name FROM sqlite_master WHERE type='table' AND name='AppUser'"")",
+                "if cur.fetchone():",
+                "    cols = [r[1] for r in cur.execute(""PRAGMA table_info('AppUser')"")]",
+                "    exists = cur.execute(""SELECT 1 FROM AppUser WHERE Username=?"", ('demo',)).fetchone()",
+                "    if not exists:",
+                "        hp = bcrypt.hash('demo123')",
+                "        if 'CreatedAt' in cols:",
+                "            cur.execute('INSERT OR IGNORE INTO ""AppUser"" (""Username"",""FullName"",""Email"",""HashedPassword"",""Role"",""IsActive"",""CreatedAt"") VALUES (?,?,?,?,?,1,datetime(""now""))', ('demo','CI Demo',None,hp,'admin'))",
+                "        else:",
+                "            cur.execute('INSERT OR IGNORE INTO ""AppUser"" (""Username"",""FullName"",""Email"",""HashedPassword"",""Role"",""IsActive"") VALUES (?,?,?,?,?,1)', ('demo','CI Demo',None,hp,'admin'))",
+                "        con.commit()",
+                "con.close()"
+              )
+              [System.IO.File]::WriteAllLines($tmp, $pyLines)
               python $tmp
-
               $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $form).access_token
             }
 
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # Smoketest
+            # Smoketest (login kısmını bypass edecek şekilde patch)
             $ps1 = ".\backend\tests\po-receive-smoketest.ps1"
             if (Test-Path $ps1) {
               $src = Get-Content $ps1 -Raw
