@@ -23,8 +23,7 @@ jobs:
           if (Test-Path "backend/requirements.txt") {
             python -m pip install -r backend/requirements.txt
           }
-          # CI uyumlu sabit sürümler
-          python -m pip install "uvicorn" "SQLAlchemy>=2" fastapi python-dotenv httpx `
+          python -m pip install uvicorn "SQLAlchemy>=2" fastapi python-dotenv httpx `
             "passlib[bcrypt]==1.7.4" "bcrypt==3.2.2" "python-jose[cryptography]"
 
       - name: Seed demo data (best-effort)
@@ -42,7 +41,7 @@ jobs:
           }
           exit 0
 
-      - name: Start API & patch+run smoketest
+      - name: Start API & run smoketest
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
@@ -77,24 +76,51 @@ jobs:
               if ($i -eq 60) { throw "API not healthy: $health" }
             }
 
-            # login (form-encoded); yoksa register + login
+            # login (form-encoded). Gerekirse SQLite'a doğrudan kullanıcı ekle (SYSDATETIME() defaultunu bypass).
             $demoUser = "demo"
             $demoPass = "demo123"
             $form = @{ username=$demoUser; password=$demoPass }
 
+            $needSeed = $false
             try {
               $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $form).access_token
             } catch {
-              $hdr = @{ "Content-Type" = "application/json" }
-              $regBody = @{ username=$demoUser; password=$demoPass; full_name="CI Demo"; role="admin" } | ConvertTo-Json
-              try { Invoke-RestMethod "$api/auth/register" -Method Post -Headers $hdr -Body $regBody | Out-Null } catch { }
+              $needSeed = $true
+            }
+
+            if ($needSeed) {
+              $py = @"
+import os, sqlite3
+from passlib.hash import bcrypt
+db = os.path.join('backend','test.db')
+con = sqlite3.connect(db)
+cur = con.cursor()
+cur.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='AppUser'")
+if cur.fetchone():
+    cols = [r[1] for r in cur.execute("PRAGMA table_info('AppUser')")]
+    exists = cur.execute("SELECT 1 FROM AppUser WHERE Username=?", ('demo',)).fetchone()
+    if not exists:
+        hp = bcrypt.hash('demo123')
+        if 'CreatedAt' in cols:
+            cur.execute('INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive","CreatedAt") VALUES (?,?,?,?,?,1,datetime("now"))',
+                        ('demo','CI Demo',None,hp,'admin'))
+        else:
+            cur.execute('INSERT OR IGNORE INTO "AppUser" ("Username","FullName","Email","HashedPassword","Role","IsActive") VALUES (?,?,?,?,?,1)',
+                        ('demo','CI Demo',None,hp,'admin'))
+        con.commit()
+con.close()
+"@
+              $tmp = Join-Path $env:RUNNER_TEMP 'seed_user_ci.py'
+              Set-Content -Path $tmp -Value $py -Encoding UTF8
+              python $tmp
+
               $tok = (Invoke-RestMethod "$api/auth/login" -Method Post -ContentType 'application/x-www-form-urlencoded' -Body $form).access_token
             }
 
             if (-not $tok) { throw "Login failed" }
             $env:CI_BEARER = $tok
 
-            # smoketest ps1'i token satırını kullanacak şekilde yamala
+            # Smoketest
             $ps1 = ".\backend\tests\po-receive-smoketest.ps1"
             if (Test-Path $ps1) {
               $src = Get-Content $ps1 -Raw
