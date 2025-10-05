@@ -43,10 +43,6 @@ jobs:
       - name: Start API (Uvicorn) in background
         shell: pwsh
         env:
-          # App'in ihtiyacı olabilecek env'ler
-          DATABASE_URL: sqlite:///./test.db
-          MSSQL_DSN: sqlite:///./test.db
-          JWT_SECRET: test-secret-for-ci
           API_BASE: http://127.0.0.1:8011
         run: |
           $ErrorActionPreference = 'Stop'
@@ -57,24 +53,37 @@ jobs:
           $outLog = Join-Path $env:RUNNER_TEMP 'uvicorn_out.log'
           $errLog = Join-Path $env:RUNNER_TEMP 'uvicorn_err.log'
 
+          # CI ortamı için .env dosyası oluştur
           $wd = (Resolve-Path backend)
+          $envFile = Join-Path $wd '.env.ci'
+          @"
+MSSQL_DSN=sqlite:///./test.db
+DATABASE_URL=sqlite:///./test.db
+JWT_SECRET=test-secret-for-ci
+API_BASE=http://127.0.0.1:8011
+"@ | Set-Content -Path $envFile -Encoding UTF8
 
+          # Uvicorn'ı backend klasöründen başlat (app.main:app)
           $args = @(
             "-m","uvicorn","app.main:app",
-            "--host",$apiHost,"--port",$apiPort,"--log-level","info"
+            "--host",$apiHost,"--port",$apiPort,
+            "--log-level","info",
+            "--env-file",".env.ci"
           )
 
           $p = Start-Process -FilePath "python" -ArgumentList $args -WorkingDirectory $wd -RedirectStandardOutput $outLog -RedirectStandardError $errLog -PassThru
           $p.Id | Set-Content -Path $pidFile -Encoding ascii
 
-          # İlk health
+          # Health bekle
           $health = "$env:API_BASE/health"
           $ok = $false
           foreach ($i in 1..60) {
             try {
               Invoke-WebRequest -Uri $health -UseBasicParsing -TimeoutSec 3 | Out-Null
               $ok = $true; break
-            } catch { Start-Sleep -Seconds 2 }
+            } catch {
+              Start-Sleep -Seconds 2
+            }
           }
           if (-not $ok) {
             Write-Host "----- uvicorn_out.log (last 200) -----"
