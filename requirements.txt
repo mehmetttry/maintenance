@@ -1,1 +1,11 @@
 -r backend/requirements.txt
+
+# Streamlit arayüzü (frontend/)
+streamlit
+requests
+pandas
+plotly
+altair
+
+# Grafik betiği (backend/scripts/build_charts.py)
+matplotlib

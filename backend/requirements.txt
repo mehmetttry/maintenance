@@ -1,4 +1,19 @@
+# API (FastAPI + SQLAlchemy + MSSQL)
+fastapi
+uvicorn
+SQLAlchemy>=2
+alembic
+pyodbc
+pydantic>=2
+email-validator==2.2.0
+python-dotenv
+
+# Kimlik doğrulama (JWT + bcrypt)
 python-jose[cryptography]==3.3.0
 passlib[bcrypt]==1.7.4
+bcrypt==3.2.2
 python-multipart==0.0.9
-email-validator==2.2.0
+
+# Test
+pytest
+httpx

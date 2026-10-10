@@ -179,3 +179,19 @@ cython_debug/
 #  refer to https://docs.cursor.com/context/ignore-files
 .cursorignore
 .cursorindexingignore
+
+# --- Proje / IDE ---
+.idea/
+.vscode/
+*.iml
+*.code-workspace
+.DS_Store
+Thumbs.db
+
+# Yerel ortam dosyaları (.env.example hariç)
+.env.*
+!.env.example
+
+# Yerel SQLite test veritabanı ve üretilen rapor çıktıları
+*.db
+report_outputs/
